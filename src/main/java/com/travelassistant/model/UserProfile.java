@@ -1,5 +1,6 @@
 package com.travelassistant.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -22,6 +23,7 @@ public class UserProfile {
 
     @OneToOne
     @JoinColumn(name = "user_id", nullable = false)
+    @JsonIgnore
     private User user;
 
     @Column(name = "first_name", length = 100)
