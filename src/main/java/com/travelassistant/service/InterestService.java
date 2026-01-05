@@ -1,5 +1,6 @@
 package com.travelassistant.service;
 
+import com.travelassistant.controller.dto.InterestDto;
 import com.travelassistant.model.Interest;
 import com.travelassistant.repository.InterestRepository;
 import lombok.RequiredArgsConstructor;
@@ -13,8 +14,15 @@ public class InterestService {
 
     private final InterestRepository interestRepository;
 
-    public List<Interest> getAllInterests() {
-        return interestRepository.findAll();
+    public List<InterestDto> getAllInterests() {
+        return interestRepository.findAll()
+                .stream()
+                .map(i -> new InterestDto(
+                        i.getId(),
+                        i.getName(),
+                        i.getCategory()
+                ))
+                .toList();
     }
 
     public Interest getById(Integer id) {

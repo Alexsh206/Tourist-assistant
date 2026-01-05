@@ -1,8 +1,10 @@
 package com.travelassistant.controller;
 
-import com.travelassistant.model.UserInterest;
+import com.travelassistant.controller.dto.UserInterestDto;
+import com.travelassistant.controller.dto.UserInterestViewDto;
 import com.travelassistant.service.UserInterestService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -15,25 +17,19 @@ public class UserInterestController {
 
     private final UserInterestService userInterestService;
 
-    @GetMapping("/{userId}")
-    public List<UserInterest> getUserInterests(@PathVariable UUID userId) {
+    @GetMapping("/me")
+    public List<UserInterestViewDto> getMyInterests(Authentication authentication) {
+        UUID userId = UUID.fromString(authentication.getName());
         return userInterestService.getUserInterests(userId);
     }
 
-    @PostMapping("/{userId}")
-    public UserInterest addInterest(
-            @PathVariable UUID userId,
-            @RequestParam Integer interestId,
-            @RequestParam Integer weight
-    ) {
-        return userInterestService.addInterest(userId, interestId, weight);
-    }
-
-    @PutMapping("/{userId}")
+    @PutMapping("/me")
     public void updateInterests(
-            @PathVariable UUID userId,
-            @RequestBody List<UserInterest> interests
+            Authentication authentication,
+            @RequestBody List<UserInterestDto> interests
     ) {
+        UUID userId = UUID.fromString(authentication.getName());
         userInterestService.updateUserInterests(userId, interests);
     }
 }
+

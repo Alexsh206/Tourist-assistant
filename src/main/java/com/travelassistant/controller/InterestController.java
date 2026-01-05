@@ -1,5 +1,6 @@
 package com.travelassistant.controller;
 
+import com.travelassistant.controller.dto.InterestDto;
 import com.travelassistant.model.Interest;
 import com.travelassistant.service.InterestService;
 import lombok.RequiredArgsConstructor;
@@ -15,7 +16,7 @@ public class InterestController {
     private final InterestService interestService;
 
     @GetMapping
-    public List<Interest> getAll() {
+    public List<InterestDto> getAll() {
         return interestService.getAllInterests();
     }
 
