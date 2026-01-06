@@ -28,7 +28,6 @@ export default function ProfilePage() {
     const [selectedInterestId, setSelectedInterestId] = useState("");
     const [newWeight, setNewWeight] = useState(1);
 
-    /* ================= LOAD ================= */
 
     useEffect(() => {
         Promise.all([
