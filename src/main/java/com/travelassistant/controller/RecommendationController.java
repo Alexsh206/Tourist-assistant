@@ -1,10 +1,12 @@
 package com.travelassistant.controller;
 
-import com.travelassistant.model.Place;
-import com.travelassistant.model.User;
+
+
+import com.travelassistant.controller.dto.RecommendationDto;
+import com.travelassistant.controller.dto.RecommendationRequestDto;
 import com.travelassistant.service.RecommendationService;
-import com.travelassistant.service.UserService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -16,11 +18,13 @@ import java.util.UUID;
 public class RecommendationController {
 
     private final RecommendationService recommendationService;
-    private final UserService userService;
 
-    @GetMapping("/{userId}")
-    public List<Place> getRecommendations(@PathVariable UUID userId) {
-        User user = userService.getById(userId);
-        return recommendationService.recommendPlacesForUser(user);
+    @PostMapping("/me")
+    public List<RecommendationDto> getMyRecommendations(
+            Authentication authentication,
+            @RequestBody RecommendationRequestDto req
+    ) {
+        UUID userId = UUID.fromString(authentication.getName());
+        return recommendationService.getRecommendationsForUser(userId, req.getLatitude(), req.getLongitude());
     }
 }

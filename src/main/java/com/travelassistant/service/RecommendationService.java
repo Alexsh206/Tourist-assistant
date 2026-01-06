@@ -1,43 +1,28 @@
 package com.travelassistant.service;
 
-import com.travelassistant.model.*;
-import com.travelassistant.repository.PlaceInterestRepository;
-import com.travelassistant.repository.UserInterestRepository;
+
+import com.travelassistant.controller.dto.RecommendationDto;
+import com.travelassistant.model.UserProfile;
+import com.travelassistant.repository.UserProfileRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.List;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
 public class RecommendationService {
 
-    private final UserInterestRepository userInterestRepository;
-    private final PlaceInterestRepository placeInterestRepository;
+    private final UserProfileRepository userProfileRepository;
 
-    public List<Place> recommendPlacesForUser(User user) {
+    public List<RecommendationDto> getRecommendationsForUser(UUID userId, Double lat, Double lng) {
+        UserProfile profile = userProfileRepository.findByUserId(userId)
+                .orElseThrow(() -> new RuntimeException("Profile not found"));
 
-        List<UserInterest> userInterests =
-                userInterestRepository.findByUser(user);
+        Integer radiusM = profile.getWalkingRadiusM() != null ? profile.getWalkingRadiusM() : 1000;
 
-        Map<UUID, Integer> placeScore = new HashMap<>();
 
-        for (UserInterest ui : userInterests) {
-            placeInterestRepository
-                    .findByInterestId(ui.getInterest().getId())
-                    .forEach(pi -> {
-                        UUID placeId = pi.getPlace().getId();
-                        int score = ui.getWeight() * pi.getRelevance();
-                        placeScore.merge(placeId, score, Integer::sum);
-                    });
-        }
-
-        return placeScore.entrySet().stream()
-                .sorted(Map.Entry.<UUID, Integer>comparingByValue().reversed())
-                .map(e -> e.getKey())
-                .map(id -> placeInterestRepository.findByPlaceId(id).get(0).getPlace())
-                .distinct()
-                .collect(Collectors.toList());
+        return List.of();
     }
 }
