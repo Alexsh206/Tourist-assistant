@@ -1,6 +1,7 @@
 package com.travelassistant.service;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import com.travelassistant.controller.dto.RecommendationDto;
 import com.travelassistant.model.UserInterest;
 import com.travelassistant.model.UserProfile;
@@ -27,7 +28,6 @@ public class RecommendationService {
     private final UserInterestRepository userInterestRepository;
     private final ObjectMapper objectMapper;
 
-
     private static final List<String> OVERPASS_URLS = List.of(
             "https://overpass-api.de/api/interpreter",
             "https://overpass.kumi.systems/api/interpreter",
@@ -47,15 +47,11 @@ public class RecommendationService {
                 : 1000;
 
         List<UserInterest> userInterests = userInterestRepository.findByUserIdWithInterest(userId);
-
         List<TagRule> rules = buildRulesFromUserInterests(userInterests);
 
-        if (rules.isEmpty()) {
-            return List.of();
-        }
+        if (rules.isEmpty()) return List.of();
 
         String query = buildOverpassQuery(lat, lng, radiusM, rules);
-
         OverpassResponse resp = callOverpass(query);
 
         List<RecommendationDto> out = resp.elements.stream()
@@ -63,6 +59,7 @@ public class RecommendationService {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
+        // унікалізація
         Map<String, RecommendationDto> uniq = new LinkedHashMap<>();
         for (RecommendationDto r : out) {
             String key = (r.getName() + "|" + r.getLatitude() + "|" + r.getLongitude()).toLowerCase();
@@ -76,8 +73,6 @@ public class RecommendationService {
                 .limit(60)
                 .toList();
     }
-
-
 
     private List<TagRule> buildRulesFromUserInterests(List<UserInterest> userInterests) {
         List<TagRule> rules = new ArrayList<>();
@@ -120,8 +115,6 @@ public class RecommendationService {
                 .toList();
     }
 
-
-
     private String buildOverpassQuery(double lat, double lng, int radiusM, List<TagRule> rules) {
         List<TagRule> top = rules.stream().limit(4).toList();
 
@@ -140,10 +133,10 @@ public class RecommendationService {
             }
         }
 
-        sb.append(");out tags center qt;");
+        // важливо: center потрібен для way/relation
+        sb.append(");out center tags qt;");
         return sb.toString();
     }
-
 
     private OverpassResponse callOverpass(String query) {
         String body = "data=" + URLEncoder.encode(query, StandardCharsets.UTF_8);
@@ -167,7 +160,7 @@ public class RecommendationService {
                         String snippet = resp.body() == null ? "" : resp.body().substring(0, Math.min(300, resp.body().length()));
                         last = new RuntimeException("Overpass " + url + " HTTP " + resp.statusCode() + ": " + snippet);
 
-                        Thread.sleep(350L * attempt); // backoff
+                        Thread.sleep(350L * attempt);
                         continue;
                     }
 
@@ -188,10 +181,6 @@ public class RecommendationService {
         throw (last != null) ? last : new RuntimeException("Failed to call Overpass");
     }
 
-
-
-
-
     private RecommendationDto toRecommendation(OverpassElement el, List<TagRule> rules) {
         if (el == null) return null;
 
@@ -202,28 +191,28 @@ public class RecommendationService {
             lat = el.center.lat;
             lon = el.center.lon;
         }
-
         if (lat == null || lon == null) return null;
 
-        String name = null;
-        if (el.tags != null) {
-            name = el.tags.getOrDefault("name", null);
-        }
-        if (name == null || name.isBlank()) name = "Unnamed place";
+        Map<String, String> tags = el.tags != null ? el.tags : Map.of();
+
+        // 🔥 НЕ показуємо безіменні місця (бекенд-фільтр)
+        String name = tags.get("name");
+        if (name == null || name.isBlank()) return null;
 
         double score = 0.0;
-        String category = "place";
+        String category = guessCategory(tags); // краще ніж завжди "place"
 
-        if (el.tags != null) {
+        // твоя логіка score + label з rules зберігається
+        if (!tags.isEmpty()) {
             for (TagRule r : rules) {
                 if ("*".equals(r.value)) {
-                    if (el.tags.containsKey(r.key)) {
+                    if (tags.containsKey(r.key)) {
                         score += r.weight;
                         category = r.label;
                     }
                 } else {
-                    String v = el.tags.get(r.key);
-                    if (r.value.equalsIgnoreCase(String.valueOf(v))) {
+                    String v = tags.get(r.key);
+                    if (v != null && r.value.equalsIgnoreCase(v)) {
                         score += r.weight;
                         category = r.label;
                     }
@@ -231,17 +220,81 @@ public class RecommendationService {
             }
         }
 
-        return new RecommendationDto(
-                null,
-                name,
-                category,
-                lat,
-                lon,
-                score,
-                "OSM"
+        // ✅ додаткові поля
+        String address = buildAddress(tags);
+        String website = firstNonBlank(tags.get("website"), tags.get("contact:website"), tags.get("url"));
+        String phone = firstNonBlank(tags.get("phone"), tags.get("contact:phone"));
+        String openingHours = tags.get("opening_hours");
+        Boolean wheelchair = parseWheelchair(tags.get("wheelchair"));
+
+        return RecommendationDto.builder()
+                .osmType(el.type)
+                .osmId(el.id)
+                .name(name)
+                .category(category != null ? category : "place")
+                .latitude(lat)
+                .longitude(lon)
+                .score(score)
+                .source("OSM")
+                .address(address)
+                .website(website)
+                .phone(phone)
+                .openingHours(openingHours)
+                .wheelchair(wheelchair)
+                .tags(tags) // якщо не хочеш — просто прибери це поле з DTO
+                .build();
+    }
+
+    // ===== Helpers for extra info =====
+
+    private String guessCategory(Map<String, String> tags) {
+        return firstNonBlank(
+                tags.get("amenity"),
+                tags.get("tourism"),
+                tags.get("leisure"),
+                tags.get("shop"),
+                tags.get("historic"),
+                tags.get("natural")
         );
     }
 
+    private String buildAddress(Map<String, String> tags) {
+        String street = tags.get("addr:street");
+        String house = tags.get("addr:housenumber");
+        String city = tags.get("addr:city");
+        String postcode = tags.get("addr:postcode");
+
+        String line1 = joinNotBlank(" ", street, house);
+        String line2 = joinNotBlank(", ", city, postcode);
+
+        String res = joinNotBlank(", ", line1, line2);
+        return res.isBlank() ? null : res;
+    }
+
+    private Boolean parseWheelchair(String v) {
+        if (v == null) return null;
+        String s = v.trim().toLowerCase();
+        if (s.equals("yes")) return true;
+        if (s.equals("no")) return false;
+        return null; // limited/unknown -> null
+    }
+
+    private String firstNonBlank(String... vals) {
+        for (String v : vals) {
+            if (v != null && !v.trim().isEmpty()) return v.trim();
+        }
+        return null;
+    }
+
+    private String joinNotBlank(String sep, String... vals) {
+        List<String> parts = new ArrayList<>();
+        for (String v : vals) {
+            if (v != null && !v.trim().isEmpty()) parts.add(v.trim());
+        }
+        return String.join(sep, parts);
+    }
+
+    // ===== models =====
 
     private record TagRule(String key, String value, String label, int weight) {}
 

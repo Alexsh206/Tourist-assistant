@@ -25,53 +25,10 @@ const safeRadius = (profile) => {
     return Number.isFinite(n) && n > 0 ? n : 1000;
 };
 
-    const normalizeRec = (r) => {
-    if (!r) return null;
-
-    if (typeof r.latitude === "number" && typeof r.longitude === "number") {
-        return {
-            name: r.name ?? "Unnamed place",
-            latitude: r.latitude,
-            longitude: r.longitude,
-            category: r.category ?? "place",
-            score: typeof r.score === "number" ? r.score : null,
-            source: r.source ?? "OSM",
-        };
-    }
-
-
-
-    const lat =
-        typeof r.lat === "number"
-            ? r.lat
-            : typeof r?.center?.lat === "number"
-                ? r.center.lat
-                : null;
-
-    const lon =
-        typeof r.lon === "number"
-            ? r.lon
-            : typeof r?.center?.lon === "number"
-                ? r.center.lon
-                : null;
-
-    if (lat == null || lon == null) return null;
-
-    const tags = r.tags || {};
-    const name =
-        tags.name || tags["name:en"] || tags.amenity || tags.tourism || "Unnamed place";
-
-    const category =
-        tags.amenity || tags.tourism || tags.shop || tags.leisure || "place";
-
-    return { name, latitude: lat, longitude: lon, category, score: null, source: "OSM" };
-};
-
 function isValidName(name) {
     if (!name) return false;
     const n = String(name).trim().toLowerCase();
     if (!n) return false;
-
     return !["unnamed place", "unnamed", "no name", "unknown"].includes(n);
 }
 
@@ -98,6 +55,88 @@ const formatDistance = (m) => {
     return `${(m / 1000).toFixed(1)} km`;
 };
 
+const normalizeRec = (r) => {
+    if (!r) return null;
+
+    // ✅ Новий формат з бекенду (RecommendationDto)
+    if (typeof r.latitude === "number" && typeof r.longitude === "number") {
+        const name = r.name ?? "";
+        return {
+            _osmType: r.osmType ?? null,
+            _osmId: typeof r.osmId === "number" ? r.osmId : r.osmId ? Number(r.osmId) : null,
+
+            name,
+            latitude: r.latitude,
+            longitude: r.longitude,
+            category: r.category ?? "place",
+            score: typeof r.score === "number" ? r.score : null,
+            source: r.source ?? "OSM",
+
+            // extra info (DTO)
+            address: r.address ?? null,
+            website: r.website ?? null,
+            phone: r.phone ?? null,
+            openingHours: r.openingHours ?? null,
+            wheelchair: typeof r.wheelchair === "boolean" ? r.wheelchair : null,
+
+            // optional tags map
+            tags: r.tags ?? null,
+        };
+    }
+
+    // 🔁 Фолбек: якщо колись прилетить сирий Overpass-елемент
+    const lat =
+        typeof r.lat === "number"
+            ? r.lat
+            : typeof r?.center?.lat === "number"
+                ? r.center.lat
+                : null;
+
+    const lon =
+        typeof r.lon === "number"
+            ? r.lon
+            : typeof r?.center?.lon === "number"
+                ? r.center.lon
+                : null;
+
+    if (lat == null || lon == null) return null;
+
+    const tags = r.tags || {};
+    const name = tags.name || tags["name:en"] || "";
+
+    const category =
+        tags.amenity || tags.tourism || tags.shop || tags.leisure || tags.historic || "place";
+
+    return {
+        _osmType: r.type ?? null,
+        _osmId: typeof r.id === "number" ? r.id : null,
+
+        name,
+        latitude: lat,
+        longitude: lon,
+        category,
+        score: null,
+        source: "OSM",
+
+        address: null,
+        website: tags.website || tags["contact:website"] || tags.url || null,
+        phone: tags.phone || tags["contact:phone"] || null,
+        openingHours: tags.opening_hours || null,
+        wheelchair: tags.wheelchair === "yes" ? true : tags.wheelchair === "no" ? false : null,
+
+        tags,
+    };
+};
+
+const safeUrl = (url) => {
+    if (!url) return null;
+    const s = String(url).trim();
+    if (!s) return null;
+    if (s.startsWith("http://") || s.startsWith("https://")) return s;
+    // часто в OSM website без протоколу
+    return `https://${s}`;
+};
+
 export default function MapPage() {
     const navigate = useNavigate();
 
@@ -115,7 +154,7 @@ export default function MapPage() {
     const [recsError, setRecsError] = useState("");
 
     const [search, setSearch] = useState("");
-    const [categoryFilter, setCategoryFilter] = useState("ALL"); // ALL | category
+    const [categoryFilter, setCategoryFilter] = useState("ALL");
     const [selectedKey, setSelectedKey] = useState(null);
 
     const radiusM = useMemo(() => safeRadius(profile), [profile]);
@@ -124,8 +163,6 @@ export default function MapPage() {
         localStorage.removeItem("token");
         navigate("/login", { replace: true });
     };
-
-
 
     const getGeoPosition = () =>
         new Promise((resolve, reject) => {
@@ -149,17 +186,17 @@ export default function MapPage() {
                 const res = await api.post("/recommendations/me", {
                     latitude: coords.lat,
                     longitude: coords.lng,
-                    radiusM: radiusOverride ?? radiusM,
+                    radiusM: radiusOverride ?? radiusM, // якщо бекенд ігнорує — ок
                 });
 
                 const data = res.data;
                 const raw = Array.isArray(data) ? data : data?.content || [];
+
                 const normalized = raw
                     .map(normalizeRec)
                     .filter(Boolean)
                     .filter((x) => typeof x.latitude === "number" && typeof x.longitude === "number")
-                    .filter((x) => isValidName(x.name));
-
+                    .filter((x) => isValidName(x.name)); // ✅ прибираємо безіменні
 
                 setRecs(normalized);
             } catch (e) {
@@ -221,19 +258,26 @@ export default function MapPage() {
         await loadRecommendations(pos);
     };
 
+    const recsWithDistance = useMemo(() => {
+        const buildKey = (r, idx) => {
+            if (r?._osmType && r?._osmId != null) return `${r._osmType}:${r._osmId}`;
+            return `${r.latitude}-${r.longitude}-${idx}`;
+        };
+
+        if (!pos) {
+            return recs.map((r, idx) => ({ ...r, _key: buildKey(r, idx), _dist: null }));
+        }
+
+        return recs.map((r, idx) => {
+            const d = distanceM(pos.lat, pos.lng, r.latitude, r.longitude);
+            return { ...r, _key: buildKey(r, idx), _dist: d };
+        });
+    }, [recs, pos]);
+
     const categories = useMemo(() => {
         const set = new Set(recs.map((r) => (r.category || "place").toUpperCase()));
         return ["ALL", ...Array.from(set).sort()];
     }, [recs]);
-
-    const recsWithDistance = useMemo(() => {
-        if (!pos) return recs.map((r, idx) => ({ ...r, _key: `${r.latitude}-${r.longitude}-${idx}`, _dist: null }));
-
-        return recs.map((r, idx) => {
-            const d = distanceM(pos.lat, pos.lng, r.latitude, r.longitude);
-            return { ...r, _key: `${r.latitude}-${r.longitude}-${idx}`, _dist: d };
-        });
-    }, [recs, pos]);
 
     const filteredRecs = useMemo(() => {
         const q = search.trim().toLowerCase();
@@ -245,7 +289,8 @@ export default function MapPage() {
             const okSearch =
                 !q ||
                 (r.name || "").toLowerCase().includes(q) ||
-                (r.category || "").toLowerCase().includes(q);
+                (r.category || "").toLowerCase().includes(q) ||
+                (r.address || "").toLowerCase().includes(q);
 
             return okCat && okSearch;
         });
@@ -290,7 +335,9 @@ export default function MapPage() {
                 <div className="map-topbar">
                     <div className="map-title">Map</div>
                     <div className="map-actions">
-                        <button className="map-btn secondary" onClick={logout}>Logout</button>
+                        <button className="map-btn secondary" onClick={logout}>
+                            Logout
+                        </button>
                     </div>
                 </div>
 
@@ -313,7 +360,12 @@ export default function MapPage() {
                     <div className="map-title">Recommended places</div>
                     <div className="map-subtitle">
                         Radius: <b>{radiusM} m</b>
-                        {profile?.city ? <> • City: <b>{profile.city}</b></> : null}
+                        {profile?.city ? (
+                            <>
+                                {" "}
+                                • City: <b>{profile.city}</b>
+                            </>
+                        ) : null}
                         {" • "}Found: <b>{recs.length}</b>
                     </div>
                 </div>
@@ -372,12 +424,12 @@ export default function MapPage() {
                                 key={r._key}
                                 position={[r.latitude, r.longitude]}
                                 ref={(ref) => {
-                                    // react-leaflet Marker ref -> Leaflet marker instance
+                                    // react-leaflet v4 ref -> Leaflet marker instance
                                     if (ref) markerRefs.current[r._key] = ref;
                                 }}
                             >
                                 <Popup>
-                                    <div style={{ minWidth: 220 }}>
+                                    <div style={{ minWidth: 240 }}>
                                         <div style={{ fontWeight: 800, fontSize: 14 }}>{r.name}</div>
 
                                         <div style={{ marginTop: 6, fontSize: 12, opacity: 0.9 }}>
@@ -396,8 +448,47 @@ export default function MapPage() {
                                             </div>
                                         )}
 
-                                        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
+                                        {/* ✅ extra info from DTO */}
+                                        {r.address && (
+                                            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.9 }}>
+                                                Address: <b>{r.address}</b>
+                                            </div>
+                                        )}
+
+                                        {r.openingHours && (
+                                            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.9 }}>
+                                                Hours: <b>{r.openingHours}</b>
+                                            </div>
+                                        )}
+
+                                        {r.phone && (
+                                            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.9 }}>
+                                                Phone: <b>{r.phone}</b>
+                                            </div>
+                                        )}
+
+                                        {r.wheelchair != null && (
+                                            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.9 }}>
+                                                Wheelchair: <b>{r.wheelchair ? "yes" : "no"}</b>
+                                            </div>
+                                        )}
+
+                                        {safeUrl(r.website) && (
+                                            <div style={{ marginTop: 6, fontSize: 12, opacity: 0.95 }}>
+                                                <a
+                                                    href={safeUrl(r.website)}
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    style={{ textDecoration: "underline" }}
+                                                >
+                                                    Website
+                                                </a>
+                                            </div>
+                                        )}
+
+                                        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
                                             Source: {r.source}
+                                            {r._osmType && r._osmId != null ? ` • OSM: ${r._osmType}/${r._osmId}` : ""}
                                         </div>
                                     </div>
                                 </Popup>
@@ -426,10 +517,7 @@ export default function MapPage() {
 
                         <div className="sidebar-field">
                             <label>Category</label>
-                            <select
-                                value={categoryFilter}
-                                onChange={(e) => setCategoryFilter(e.target.value)}
-                            >
+                            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
                                 {categories.map((c) => (
                                     <option key={c} value={c}>
                                         {c === "ALL" ? "All" : c.toLowerCase()}
@@ -441,9 +529,7 @@ export default function MapPage() {
 
                     <div className="sidebar-list">
                         {filteredRecs.length === 0 ? (
-                            <div className="sidebar-empty">
-                                No matches. Try another search or change category.
-                            </div>
+                            <div className="sidebar-empty">No matches. Try another search or change category.</div>
                         ) : (
                             filteredRecs.map((r) => (
                                 <button
@@ -460,6 +546,7 @@ export default function MapPage() {
                                         <div className="rec-sub">
                                             {typeof r._dist === "number" ? formatDistance(r._dist) : "—"}
                                             {typeof r.score === "number" ? ` • score ${r.score.toFixed(1)}` : ""}
+                                            {r.address ? ` • ${r.address}` : ""}
                                         </div>
                                         <div className="rec-src">{r.source}</div>
                                     </div>
