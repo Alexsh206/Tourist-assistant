@@ -58,9 +58,9 @@ const formatDistance = (m) => {
 const normalizeRec = (r) => {
     if (!r) return null;
 
-    // ✅ Новий формат з бекенду (RecommendationDto)
     if (typeof r.latitude === "number" && typeof r.longitude === "number") {
         const name = r.name ?? "";
+
         return {
             _osmType: r.osmType ?? null,
             _osmId: typeof r.osmId === "number" ? r.osmId : r.osmId ? Number(r.osmId) : null,
@@ -72,19 +72,26 @@ const normalizeRec = (r) => {
             score: typeof r.score === "number" ? r.score : null,
             source: r.source ?? "OSM",
 
-            // extra info (DTO)
             address: r.address ?? null,
             website: r.website ?? null,
             phone: r.phone ?? null,
             openingHours: r.openingHours ?? null,
             wheelchair: typeof r.wheelchair === "boolean" ? r.wheelchair : null,
 
-            // optional tags map
+            estimatedCostEur:
+                typeof r.estimatedCostEur === "number"
+                    ? r.estimatedCostEur
+                    : r.estimatedCostEur != null
+                        ? Number(r.estimatedCostEur)
+                        : null,
+
+            costLevel: r.costLevel ?? null,
+
             tags: r.tags ?? null,
         };
     }
 
-    // 🔁 Фолбек: якщо колись прилетить сирий Overpass-елемент
+    // fallback (if ever raw Overpass element)
     const lat =
         typeof r.lat === "number"
             ? r.lat
@@ -124,16 +131,19 @@ const normalizeRec = (r) => {
         openingHours: tags.opening_hours || null,
         wheelchair: tags.wheelchair === "yes" ? true : tags.wheelchair === "no" ? false : null,
 
+        estimatedCostEur: null,
+        costLevel: null,
+
         tags,
     };
 };
+
 
 const safeUrl = (url) => {
     if (!url) return null;
     const s = String(url).trim();
     if (!s) return null;
     if (s.startsWith("http://") || s.startsWith("https://")) return s;
-    // часто в OSM website без протоколу
     return `https://${s}`;
 };
 
@@ -473,6 +483,14 @@ export default function MapPage() {
                                             </div>
                                         )}
 
+                                        {typeof r.estimatedCostEur === "number" && (
+                                            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.9 }}>
+                                                Avg cost: <b>~{r.estimatedCostEur.toFixed(0)} €</b>
+                                                {r.costLevel ? ` • ${r.costLevel.toLowerCase()}` : ""}
+                                            </div>
+                                        )}
+
+
                                         {safeUrl(r.website) && (
                                             <div style={{ marginTop: 6, fontSize: 12, opacity: 0.95 }}>
                                                 <a
@@ -546,6 +564,9 @@ export default function MapPage() {
                                         <div className="rec-sub">
                                             {typeof r._dist === "number" ? formatDistance(r._dist) : "—"}
                                             {typeof r.score === "number" ? ` • score ${r.score.toFixed(1)}` : ""}
+                                            {typeof r.estimatedCostEur === "number"
+                                                ? ` • ~${r.estimatedCostEur.toFixed(0)}€${r.costLevel ? ` (${r.costLevel.toLowerCase()})` : ""}`
+                                                : ""}
                                             {r.address ? ` • ${r.address}` : ""}
                                         </div>
                                         <div className="rec-src">{r.source}</div>

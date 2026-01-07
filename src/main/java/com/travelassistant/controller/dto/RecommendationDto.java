@@ -11,11 +11,9 @@ import java.util.Map;
 @Builder
 public class RecommendationDto {
 
-    // OSM identity
-    private String osmType;   // node/way/relation
+    private String osmType;
     private Long osmId;
 
-    // core
     private String name;
     private String category;
     private Double latitude;
@@ -23,13 +21,14 @@ public class RecommendationDto {
     private Double score;
     private String source;
 
-    // extra info
     private String address;
     private String website;
     private String phone;
     private String openingHours;
     private Boolean wheelchair;
 
-    // optional: full tags (можеш прибрати, якщо не треба)
+    private Double estimatedCostEur;
+    private String costLevel;
+
     private Map<String, String> tags;
 }

@@ -27,6 +27,8 @@ public class RecommendationService {
     private final UserProfileRepository userProfileRepository;
     private final UserInterestRepository userInterestRepository;
     private final ObjectMapper objectMapper;
+    private enum CostLevel { LOW, MID, HIGH }
+
 
     private static final List<String> OVERPASS_URLS = List.of(
             "https://overpass-api.de/api/interpreter",
@@ -59,7 +61,6 @@ public class RecommendationService {
                 .filter(Objects::nonNull)
                 .collect(Collectors.toList());
 
-        // унікалізація
         Map<String, RecommendationDto> uniq = new LinkedHashMap<>();
         for (RecommendationDto r : out) {
             String key = (r.getName() + "|" + r.getLatitude() + "|" + r.getLongitude()).toLowerCase();
@@ -133,7 +134,6 @@ public class RecommendationService {
             }
         }
 
-        // важливо: center потрібен для way/relation
         sb.append(");out center tags qt;");
         return sb.toString();
     }
@@ -195,14 +195,12 @@ public class RecommendationService {
 
         Map<String, String> tags = el.tags != null ? el.tags : Map.of();
 
-        // 🔥 НЕ показуємо безіменні місця (бекенд-фільтр)
         String name = tags.get("name");
         if (name == null || name.isBlank()) return null;
 
         double score = 0.0;
-        String category = guessCategory(tags); // краще ніж завжди "place"
+        String category = guessCategory(tags);
 
-        // твоя логіка score + label з rules зберігається
         if (!tags.isEmpty()) {
             for (TagRule r : rules) {
                 if ("*".equals(r.value)) {
@@ -220,12 +218,13 @@ public class RecommendationService {
             }
         }
 
-        // ✅ додаткові поля
         String address = buildAddress(tags);
         String website = firstNonBlank(tags.get("website"), tags.get("contact:website"), tags.get("url"));
         String phone = firstNonBlank(tags.get("phone"), tags.get("contact:phone"));
         String openingHours = tags.get("opening_hours");
         Boolean wheelchair = parseWheelchair(tags.get("wheelchair"));
+        CostEstimate ce = estimateCost(tags, category);
+
 
         return RecommendationDto.builder()
                 .osmType(el.type)
@@ -241,11 +240,12 @@ public class RecommendationService {
                 .phone(phone)
                 .openingHours(openingHours)
                 .wheelchair(wheelchair)
-                .tags(tags) // якщо не хочеш — просто прибери це поле з DTO
+                .tags(tags)
+                .estimatedCostEur(ce.eur)
+                .costLevel(ce.level.name())
                 .build();
     }
 
-    // ===== Helpers for extra info =====
 
     private String guessCategory(Map<String, String> tags) {
         return firstNonBlank(
@@ -276,7 +276,7 @@ public class RecommendationService {
         String s = v.trim().toLowerCase();
         if (s.equals("yes")) return true;
         if (s.equals("no")) return false;
-        return null; // limited/unknown -> null
+        return null;
     }
 
     private String firstNonBlank(String... vals) {
@@ -294,9 +294,92 @@ public class RecommendationService {
         return String.join(sep, parts);
     }
 
-    // ===== models =====
 
     private record TagRule(String key, String value, String label, int weight) {}
+
+    private static class CostEstimate {
+        final Double eur;
+        final CostLevel level;
+
+        CostEstimate(Double eur, CostLevel level) {
+            this.eur = eur;
+            this.level = level;
+        }
+    }
+
+    private CostEstimate estimateCost(Map<String, String> tags, String category) {
+        tags = tags != null ? tags : Map.of();
+        String cat = (category == null ? "" : category).trim().toLowerCase();
+
+        String fee = val(tags, "fee");
+        if ("no".equalsIgnoreCase(fee)) {
+            return new CostEstimate(0.0, CostLevel.LOW);
+        }
+
+
+        Double explicit = parseFirstNumber(val(tags, "charge"));
+        if (explicit == null) explicit = parseFirstNumber(val(tags, "fee:amount"));
+        if (explicit != null) {
+            return new CostEstimate(explicit, explicit <= 10 ? CostLevel.LOW : explicit <= 25 ? CostLevel.MID : CostLevel.HIGH);
+        }
+
+        if (cat.contains("park") || cat.contains("viewpoint") || cat.contains("nature")) {
+            if ("yes".equalsIgnoreCase(fee)) return new CostEstimate(5.0, CostLevel.LOW);
+            return new CostEstimate(0.0, CostLevel.LOW);
+        }
+
+        if (cat.contains("museum") || cat.contains("histor") || cat.contains("culture") || cat.contains("landmark") || cat.contains("attraction")) {
+            if ("no".equalsIgnoreCase(fee)) return new CostEstimate(0.0, CostLevel.LOW);
+            return new CostEstimate(10.0, CostLevel.MID);
+        }
+
+        if (cat.contains("cafe")) {
+            return new CostEstimate(7.0, CostLevel.LOW);
+        }
+
+        if (cat.contains("restaurant")) {
+            String cuisine = val(tags, "cuisine");
+            if (cuisine != null && cuisine.toLowerCase().contains("sushi")) {
+                return new CostEstimate(22.0, CostLevel.MID);
+            }
+            return new CostEstimate(15.0, CostLevel.MID);
+        }
+
+        if ("yes".equalsIgnoreCase(fee)) return new CostEstimate(8.0, CostLevel.MID);
+        return new CostEstimate(0.0, CostLevel.LOW);
+    }
+
+    private String val(Map<String, String> tags, String key) {
+        if (tags == null) return null;
+        String v = tags.get(key);
+        return (v == null || v.isBlank()) ? null : v.trim();
+    }
+
+    private Double parseFirstNumber(String s) {
+        if (s == null) return null;
+        String cleaned = s.replace(",", ".");
+        StringBuilder num = new StringBuilder();
+        boolean started = false;
+
+        for (int i = 0; i < cleaned.length(); i++) {
+            char c = cleaned.charAt(i);
+            if ((c >= '0' && c <= '9') || (c == '.' && started)) {
+                num.append(c);
+                started = true;
+            } else if (started) {
+                break;
+            }
+        }
+
+        if (num.isEmpty()) return null;
+
+        try {
+            return Double.parseDouble(num.toString());
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     private static class OverpassResponse {
