@@ -104,8 +104,11 @@ export default function ProfilePage() {
         <div className="profile-shell">
             <div className="profile-card glass">
                 <header className="profile-header">
-                    <h2>My Profile</h2>
-                    <p className="subtitle">Personal travel preferences</p>
+                    <h2>Build your travel profile</h2>
+                    <p className="subtitle">
+                        Set your language, travel style, budget, distance, and interests so the assistant can recommend
+                        places that truly match your pace, mood, and current context.
+                    </p>
                 </header>
 
                 <section className="profile-section">
