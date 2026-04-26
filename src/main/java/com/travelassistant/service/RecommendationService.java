@@ -1,10 +1,11 @@
 package com.travelassistant.service;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-
 import com.travelassistant.controller.dto.RecommendationDto;
+import com.travelassistant.controller.dto.RecommendationResponseDto;
 import com.travelassistant.model.UserInterest;
 import com.travelassistant.model.UserProfile;
+import com.travelassistant.model.WeatherKind;
 import com.travelassistant.repository.UserInterestRepository;
 import com.travelassistant.repository.UserProfileRepository;
 import lombok.RequiredArgsConstructor;
@@ -26,9 +27,10 @@ public class RecommendationService {
 
     private final UserProfileRepository userProfileRepository;
     private final UserInterestRepository userInterestRepository;
+    private final WeatherService weatherService;
     private final ObjectMapper objectMapper;
-    private enum CostLevel { LOW, MID, HIGH }
 
+    private enum CostLevel { LOW, MID, HIGH }
 
     private static final List<String> OVERPASS_URLS = List.of(
             "https://overpass-api.de/api/interpreter",
@@ -38,8 +40,10 @@ public class RecommendationService {
 
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
-    public List<RecommendationDto> getRecommendationsForUser(UUID userId, Double lat, Double lng) {
-        if (lat == null || lng == null) throw new RuntimeException("Latitude/longitude required");
+    public RecommendationResponseDto getRecommendationsForUser(UUID userId, Double lat, Double lng) {
+        if (lat == null || lng == null) {
+            throw new RuntimeException("Latitude/longitude required");
+        }
 
         UserProfile profile = userProfileRepository.findByUserId(userId)
                 .orElseThrow(() -> new RuntimeException("Profile not found"));
@@ -51,14 +55,32 @@ public class RecommendationService {
         List<UserInterest> userInterests = userInterestRepository.findByUserIdWithInterest(userId);
         List<TagRule> rules = buildRulesFromUserInterests(userInterests);
 
-        if (rules.isEmpty()) return List.of();
+        if (rules.isEmpty()) {
+            return RecommendationResponseDto.builder()
+                    .weatherKind(WeatherKind.CLEAR.name())
+                    .weatherMessage("No user interests configured")
+                    .recommendations(List.of())
+                    .build();
+        }
 
-        String query = buildOverpassQuery(lat, lng, radiusM, rules);
+        WeatherKind weatherKind = weatherService.getCurrentWeatherKind(lat, lng);
+
+        List<TagRule> weatherFilteredRules = rules.stream()
+                .filter(rule -> isRuleAllowedForWeather(rule, weatherKind))
+                .toList();
+
+        if (weatherFilteredRules.isEmpty()) {
+            weatherFilteredRules = rules;
+        }
+
+        String query = buildOverpassQuery(lat, lng, radiusM, weatherFilteredRules);
         OverpassResponse resp = callOverpass(query);
 
+        List<TagRule> finalWeatherFilteredRules = weatherFilteredRules;
         List<RecommendationDto> out = resp.elements.stream()
-                .map(el -> toRecommendation(el, rules))
+                .map(el -> toRecommendation(el, finalWeatherFilteredRules))
                 .filter(Objects::nonNull)
+                .filter(place -> isPlaceAllowedForWeather(place, weatherKind))
                 .collect(Collectors.toList());
 
         Map<String, RecommendationDto> uniq = new LinkedHashMap<>();
@@ -67,12 +89,18 @@ public class RecommendationService {
             uniq.putIfAbsent(key, r);
         }
 
-        return uniq.values().stream()
+        List<RecommendationDto> result = uniq.values().stream()
                 .sorted(Comparator
                         .comparing(RecommendationDto::getScore, Comparator.nullsLast(Comparator.reverseOrder()))
                         .thenComparing(RecommendationDto::getName, Comparator.nullsLast(String::compareToIgnoreCase)))
                 .limit(60)
                 .toList();
+
+        return RecommendationResponseDto.builder()
+                .weatherKind(weatherKind.name())
+                .weatherMessage(weatherService.buildWeatherMessage(weatherKind))
+                .recommendations(result)
+                .build();
     }
 
     private List<TagRule> buildRulesFromUserInterests(List<UserInterest> userInterests) {
@@ -88,8 +116,8 @@ public class RecommendationService {
             if (name.contains("museum")) rules.add(new TagRule("tourism", "museum", "museum", weight));
             if (name.contains("art") && name.contains("galler")) rules.add(new TagRule("tourism", "gallery", "gallery", weight));
             if (name.contains("park")) rules.add(new TagRule("leisure", "park", "park", weight));
-            if (name.contains("hiking")) rules.add(new TagRule("tourism", "viewpoint", "hiking", weight)); // MVP
-            if (name.contains("histor")) rules.add(new TagRule("historic", "*", "historical", weight)); // wildcard
+            if (name.contains("hiking")) rules.add(new TagRule("tourism", "viewpoint", "hiking", weight));
+            if (name.contains("histor")) rules.add(new TagRule("historic", "*", "historical", weight));
             if (name.contains("landmark")) rules.add(new TagRule("tourism", "attraction", "landmark", weight));
 
             if (rules.isEmpty() || rules.stream().noneMatch(r -> r.weight == weight)) {
@@ -114,6 +142,56 @@ public class RecommendationService {
         return uniq.values().stream()
                 .sorted(Comparator.comparingInt((TagRule r) -> r.weight).reversed())
                 .toList();
+    }
+
+    private boolean isRuleAllowedForWeather(TagRule rule, WeatherKind weatherKind) {
+        String label = rule.label().toLowerCase();
+
+        return switch (weatherKind) {
+            case RAIN, SNOW, STORM, COLD ->
+                    label.contains("museum")
+                            || label.contains("gallery")
+                            || label.contains("restaurant")
+                            || label.contains("cafe")
+                            || label.contains("culture")
+                            || label.contains("historical")
+                            || label.contains("landmark");
+
+            case HOT ->
+                    label.contains("museum")
+                            || label.contains("gallery")
+                            || label.contains("cafe")
+                            || label.contains("restaurant")
+                            || label.contains("park")
+                            || label.contains("nature");
+
+            case CLEAR, CLOUDY -> true;
+        };
+    }
+
+    private boolean isPlaceAllowedForWeather(RecommendationDto place, WeatherKind weatherKind) {
+        String category = place.getCategory() == null ? "" : place.getCategory().toLowerCase();
+
+        return switch (weatherKind) {
+            case RAIN, SNOW, STORM, COLD ->
+                    category.contains("museum")
+                            || category.contains("gallery")
+                            || category.contains("restaurant")
+                            || category.contains("cafe")
+                            || category.contains("historical")
+                            || category.contains("attraction");
+
+            case HOT ->
+                    category.contains("museum")
+                            || category.contains("gallery")
+                            || category.contains("restaurant")
+                            || category.contains("cafe")
+                            || category.contains("park")
+                            || category.contains("viewpoint")
+                            || category.contains("attraction");
+
+            case CLEAR, CLOUDY -> true;
+        };
     }
 
     private String buildOverpassQuery(double lat, double lng, int radiusM, List<TagRule> rules) {
@@ -159,7 +237,6 @@ public class RecommendationService {
                     if (resp.statusCode() == 429 || resp.statusCode() == 502 || resp.statusCode() == 503 || resp.statusCode() == 504) {
                         String snippet = resp.body() == null ? "" : resp.body().substring(0, Math.min(300, resp.body().length()));
                         last = new RuntimeException("Overpass " + url + " HTTP " + resp.statusCode() + ": " + snippet);
-
                         Thread.sleep(350L * attempt);
                         continue;
                     }
@@ -173,7 +250,10 @@ public class RecommendationService {
 
                 } catch (Exception e) {
                     last = new RuntimeException("Failed on " + url + " attempt " + attempt + ": " + e.getMessage(), e);
-                    try { Thread.sleep(350L * attempt); } catch (InterruptedException ignored) {}
+                    try {
+                        Thread.sleep(350L * attempt);
+                    } catch (InterruptedException ignored) {
+                    }
                 }
             }
         }
@@ -225,7 +305,6 @@ public class RecommendationService {
         Boolean wheelchair = parseWheelchair(tags.get("wheelchair"));
         CostEstimate ce = estimateCost(tags, category);
 
-
         return RecommendationDto.builder()
                 .osmType(el.type)
                 .osmId(el.id)
@@ -246,7 +325,6 @@ public class RecommendationService {
                 .build();
     }
 
-
     private String guessCategory(Map<String, String> tags) {
         return firstNonBlank(
                 tags.get("amenity"),
@@ -259,146 +337,87 @@ public class RecommendationService {
     }
 
     private String buildAddress(Map<String, String> tags) {
-        String street = tags.get("addr:street");
-        String house = tags.get("addr:housenumber");
-        String city = tags.get("addr:city");
-        String postcode = tags.get("addr:postcode");
+        String road = firstNonBlank(tags.get("addr:street"), tags.get("street"));
+        String house = firstNonBlank(tags.get("addr:housenumber"), tags.get("housenumber"));
+        String city = firstNonBlank(tags.get("addr:city"), tags.get("city"), tags.get("addr:town"));
+        String postcode = firstNonBlank(tags.get("addr:postcode"));
 
-        String line1 = joinNotBlank(" ", street, house);
-        String line2 = joinNotBlank(", ", city, postcode);
+        List<String> parts = new ArrayList<>();
+        String line1 = StreamJoin.join(" ", road, house);
+        if (!line1.isBlank()) parts.add(line1);
+        if (city != null && !city.isBlank()) parts.add(city);
+        if (postcode != null && !postcode.isBlank()) parts.add(postcode);
 
-        String res = joinNotBlank(", ", line1, line2);
-        return res.isBlank() ? null : res;
+        return parts.isEmpty() ? null : String.join(", ", parts);
     }
 
     private Boolean parseWheelchair(String v) {
         if (v == null) return null;
-        String s = v.trim().toLowerCase();
-        if (s.equals("yes")) return true;
-        if (s.equals("no")) return false;
-        return null;
-    }
-
-    private String firstNonBlank(String... vals) {
-        for (String v : vals) {
-            if (v != null && !v.trim().isEmpty()) return v.trim();
-        }
-        return null;
-    }
-
-    private String joinNotBlank(String sep, String... vals) {
-        List<String> parts = new ArrayList<>();
-        for (String v : vals) {
-            if (v != null && !v.trim().isEmpty()) parts.add(v.trim());
-        }
-        return String.join(sep, parts);
-    }
-
-
-    private record TagRule(String key, String value, String label, int weight) {}
-
-    private static class CostEstimate {
-        final Double eur;
-        final CostLevel level;
-
-        CostEstimate(Double eur, CostLevel level) {
-            this.eur = eur;
-            this.level = level;
-        }
+        return switch (v.toLowerCase()) {
+            case "yes", "limited" -> true;
+            case "no" -> false;
+            default -> null;
+        };
     }
 
     private CostEstimate estimateCost(Map<String, String> tags, String category) {
-        tags = tags != null ? tags : Map.of();
-        String cat = (category == null ? "" : category).trim().toLowerCase();
+        String fee = tags.get("fee");
+        String priceRange = firstNonBlank(tags.get("price_range"), tags.get("price"));
 
-        String fee = val(tags, "fee");
-        if ("no".equalsIgnoreCase(fee)) {
-            return new CostEstimate(0.0, CostLevel.LOW);
-        }
+        if ("no".equalsIgnoreCase(fee)) return new CostEstimate(0.0, CostLevel.LOW);
+        if (priceRange != null && priceRange.contains("€€€")) return new CostEstimate(35.0, CostLevel.HIGH);
+        if (priceRange != null && priceRange.contains("€€")) return new CostEstimate(18.0, CostLevel.MID);
+        if (priceRange != null && priceRange.contains("€")) return new CostEstimate(8.0, CostLevel.LOW);
 
+        String c = category == null ? "" : category.toLowerCase();
 
-        Double explicit = parseFirstNumber(val(tags, "charge"));
-        if (explicit == null) explicit = parseFirstNumber(val(tags, "fee:amount"));
-        if (explicit != null) {
-            return new CostEstimate(explicit, explicit <= 10 ? CostLevel.LOW : explicit <= 25 ? CostLevel.MID : CostLevel.HIGH);
-        }
+        if (c.contains("restaurant")) return new CostEstimate(20.0, CostLevel.MID);
+        if (c.contains("cafe")) return new CostEstimate(7.0, CostLevel.LOW);
+        if (c.contains("museum") || c.contains("gallery")) return new CostEstimate(12.0, CostLevel.MID);
+        if (c.contains("park") || c.contains("viewpoint")) return new CostEstimate(0.0, CostLevel.LOW);
 
-        if (cat.contains("park") || cat.contains("viewpoint") || cat.contains("nature")) {
-            if ("yes".equalsIgnoreCase(fee)) return new CostEstimate(5.0, CostLevel.LOW);
-            return new CostEstimate(0.0, CostLevel.LOW);
-        }
-
-        if (cat.contains("museum") || cat.contains("histor") || cat.contains("culture") || cat.contains("landmark") || cat.contains("attraction")) {
-            if ("no".equalsIgnoreCase(fee)) return new CostEstimate(0.0, CostLevel.LOW);
-            return new CostEstimate(10.0, CostLevel.MID);
-        }
-
-        if (cat.contains("cafe")) {
-            return new CostEstimate(7.0, CostLevel.LOW);
-        }
-
-        if (cat.contains("restaurant")) {
-            String cuisine = val(tags, "cuisine");
-            if (cuisine != null && cuisine.toLowerCase().contains("sushi")) {
-                return new CostEstimate(22.0, CostLevel.MID);
-            }
-            return new CostEstimate(15.0, CostLevel.MID);
-        }
-
-        if ("yes".equalsIgnoreCase(fee)) return new CostEstimate(8.0, CostLevel.MID);
-        return new CostEstimate(0.0, CostLevel.LOW);
+        return new CostEstimate(10.0, CostLevel.MID);
     }
 
-    private String val(Map<String, String> tags, String key) {
-        if (tags == null) return null;
-        String v = tags.get(key);
-        return (v == null || v.isBlank()) ? null : v.trim();
+    private String firstNonBlank(String... values) {
+        if (values == null) return null;
+        for (String v : values) {
+            if (v != null && !v.isBlank()) return v;
+        }
+        return null;
     }
 
-    private Double parseFirstNumber(String s) {
-        if (s == null) return null;
-        String cleaned = s.replace(",", ".");
-        StringBuilder num = new StringBuilder();
-        boolean started = false;
-
-        for (int i = 0; i < cleaned.length(); i++) {
-            char c = cleaned.charAt(i);
-            if ((c >= '0' && c <= '9') || (c == '.' && started)) {
-                num.append(c);
-                started = true;
-            } else if (started) {
-                break;
-            }
-        }
-
-        if (num.isEmpty()) return null;
-
-        try {
-            return Double.parseDouble(num.toString());
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
+    private record CostEstimate(Double eur, CostLevel level) {}
+    private record TagRule(String key, String value, String label, int weight) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    private static class OverpassResponse {
+    static class OverpassResponse {
         public List<OverpassElement> elements = new ArrayList<>();
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    private static class OverpassElement {
+    static class OverpassElement {
+        public Long id;
         public String type;
-        public long id;
         public Double lat;
         public Double lon;
-        public Map<String, String> tags;
         public Center center;
+        public Map<String, String> tags;
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    private static class Center {
+    static class Center {
         public Double lat;
         public Double lon;
+    }
+
+    static class StreamJoin {
+        static String join(String delimiter, String... parts) {
+            return Arrays.stream(parts)
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .filter(s -> !s.isBlank())
+                    .collect(Collectors.joining(delimiter));
+        }
     }
 }

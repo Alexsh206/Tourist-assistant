@@ -153,6 +153,9 @@ export default function MapPage() {
     const mapRef = useRef(null);
     const markerRefs = useRef({}); // key -> Leaflet marker instance
 
+    const [weatherKind, setWeatherKind] = useState(null);
+    const [weatherMessage, setWeatherMessage] = useState("");
+
     const [loading, setLoading] = useState(true);
     const [profile, setProfile] = useState(null);
 
@@ -196,22 +199,32 @@ export default function MapPage() {
                 const res = await api.post("/recommendations/me", {
                     latitude: coords.lat,
                     longitude: coords.lng,
-                    radiusM: radiusOverride ?? radiusM, // якщо бекенд ігнорує — ок
+                    radiusM: radiusOverride ?? radiusM,
                 });
 
                 const data = res.data;
-                const raw = Array.isArray(data) ? data : data?.content || [];
+
+                const raw = Array.isArray(data)
+                    ? data
+                    : Array.isArray(data?.recommendations)
+                        ? data.recommendations
+                        : data?.content || [];
+
+                setWeatherKind(data?.weatherKind ?? null);
+                setWeatherMessage(data?.weatherMessage ?? "");
 
                 const normalized = raw
                     .map(normalizeRec)
                     .filter(Boolean)
                     .filter((x) => typeof x.latitude === "number" && typeof x.longitude === "number")
-                    .filter((x) => isValidName(x.name)); // ✅ прибираємо безіменні
+                    .filter((x) => isValidName(x.name));
 
                 setRecs(normalized);
             } catch (e) {
                 console.error(e);
                 setRecs([]);
+                setWeatherKind(null);
+                setWeatherMessage("");
                 setRecsError("Failed to load recommendations (Overpass may be overloaded). Try Refresh.");
             } finally {
                 setRecsLoading(false);
@@ -370,6 +383,12 @@ export default function MapPage() {
                     <div className="map-title">Recommended places</div>
                     <div className="map-subtitle">
                         Radius: <b>{radiusM} m</b>
+                        {weatherKind && (
+                            <div style={{ marginTop: 8, fontSize: 14 }}>
+                                Weather mode: <b>{weatherKind}</b>
+                                {weatherMessage ? ` — ${weatherMessage}` : ""}
+                            </div>
+                        )}
                         {profile?.city ? (
                             <>
                                 {" "}
@@ -378,6 +397,7 @@ export default function MapPage() {
                         ) : null}
                         {" • "}Found: <b>{recs.length}</b>
                     </div>
+
                 </div>
 
                 <div className="map-actions">
