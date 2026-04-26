@@ -34,8 +34,12 @@ export default function LoginPage() {
             <div className="auth-card">
                 <div className="auth-header">
                     <div>
+                        <div className="auth-kicker">Smart travel companion</div>
                         <h1 className="auth-title">Welcome back</h1>
-                        <p className="auth-subtitle">Sign in to get your personalized recommendations</p>
+                        <p className="auth-subtitle">
+                            Sign in to get live weather-aware recommendations, nearby places,
+                            and a personalized city experience built around your travel style.
+                        </p>
                     </div>
                 </div>
 
@@ -48,19 +52,19 @@ export default function LoginPage() {
                             onChange={(e) => setEmail(e.target.value)}
                             autoComplete="email"
                         />
-                        <span className="hint">We’ll never share your email.</span>
+                        <span className="hint">Used to securely sync your profile and preferences.</span>
                     </div>
 
                     <div className="field">
                         <label>Password</label>
                         <input
                             type="password"
-                            placeholder="Your password"
+                            placeholder="Enter your password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             autoComplete="current-password"
                         />
-                        <span className="hint">Use at least 8 characters.</span>
+                        <span className="hint">Use your existing account credentials to continue.</span>
                     </div>
 
                     <button
@@ -68,7 +72,7 @@ export default function LoginPage() {
                         onClick={login}
                         disabled={submitting}
                     >
-                        {submitting ? "Signing in..." : "Login"}
+                        {submitting ? "Signing in..." : "Enter the app"}
                     </button>
 
                     <div className="auth-divider">
@@ -87,7 +91,7 @@ export default function LoginPage() {
                 </div>
 
                 <div className="auth-footer">
-                    By continuing you agree to the app’s basic usage rules.
+                    Designed for smooth city discovery, personalized routes, and context-aware recommendations.
                 </div>
             </div>
         </div>
