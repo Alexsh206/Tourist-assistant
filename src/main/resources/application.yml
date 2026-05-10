@@ -18,5 +18,10 @@ jwt:
   secret: super-secret-key-123456789-super-secret-key
   expiration-ms: 86400000
 
+
+ollama:
+  base-url: http://localhost:11434
+  model: gemma3
+
 server:
   port: 8080

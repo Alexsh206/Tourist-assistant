@@ -86,12 +86,10 @@ const normalizeRec = (r) => {
                         : null,
 
             costLevel: r.costLevel ?? null,
-
             tags: r.tags ?? null,
         };
     }
 
-    // fallback (if ever raw Overpass element)
     const lat =
         typeof r.lat === "number"
             ? r.lat
@@ -133,11 +131,9 @@ const normalizeRec = (r) => {
 
         estimatedCostEur: null,
         costLevel: null,
-
         tags,
     };
 };
-
 
 const safeUrl = (url) => {
     if (!url) return null;
@@ -147,28 +143,52 @@ const safeUrl = (url) => {
     return `https://${s}`;
 };
 
+const formatCategory = (category) => {
+    if (!category) return "Place";
+    const s = String(category).replaceAll("_", " ").trim();
+    return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+};
+
+const formatWeatherLabel = (weatherKind) => {
+    if (!weatherKind) return "";
+    return String(weatherKind).replaceAll("_", " ").toLowerCase();
+};
+
+const buildRecKey = (r, idx) => {
+    if (r?._osmType && r?._osmId != null) return `${r._osmType}:${r._osmId}`;
+    return `${r.latitude}-${r.longitude}-${idx}`;
+};
+
+const buildAiPointKey = (p, idx) => {
+    return `ai-${p.latitude}-${p.longitude}-${idx}`;
+};
+
 export default function MapPage() {
     const navigate = useNavigate();
 
     const mapRef = useRef(null);
-    const markerRefs = useRef({}); // key -> Leaflet marker instance
-
-    const [weatherKind, setWeatherKind] = useState(null);
-    const [weatherMessage, setWeatherMessage] = useState("");
+    const markerRefs = useRef({});
 
     const [loading, setLoading] = useState(true);
     const [profile, setProfile] = useState(null);
 
-    const [pos, setPos] = useState(null); // { lat, lng }
+    const [pos, setPos] = useState(null);
     const [geoError, setGeoError] = useState("");
 
     const [recs, setRecs] = useState([]);
     const [recsLoading, setRecsLoading] = useState(false);
     const [recsError, setRecsError] = useState("");
 
+    const [weatherKind, setWeatherKind] = useState(null);
+    const [weatherMessage, setWeatherMessage] = useState("");
+
     const [search, setSearch] = useState("");
     const [categoryFilter, setCategoryFilter] = useState("ALL");
     const [selectedKey, setSelectedKey] = useState(null);
+
+    const [aiRoute, setAiRoute] = useState(null);
+    const [aiRouteLoading, setAiRouteLoading] = useState(false);
+    const [aiRouteError, setAiRouteError] = useState("");
 
     const radiusM = useMemo(() => safeRadius(profile), [profile]);
 
@@ -183,6 +203,7 @@ export default function MapPage() {
                 reject(new Error("Geolocation is not supported by this browser."));
                 return;
             }
+
             navigator.geolocation.getCurrentPosition(
                 (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude }),
                 (e) => reject(e),
@@ -225,7 +246,7 @@ export default function MapPage() {
                 setRecs([]);
                 setWeatherKind(null);
                 setWeatherMessage("");
-                setRecsError("Failed to load recommendations (Overpass may be overloaded). Try Refresh.");
+                setRecsError("Failed to load recommendations. Overpass or weather services may be temporarily unavailable.");
             } finally {
                 setRecsLoading(false);
             }
@@ -253,7 +274,7 @@ export default function MapPage() {
                 setLoading(false);
             } catch (e) {
                 console.error(e);
-                setGeoError(e?.message || "Failed to load map.");
+                setGeoError(e?.message || "Failed to load the map.");
                 setLoading(false);
             }
         })();
@@ -281,19 +302,39 @@ export default function MapPage() {
         await loadRecommendations(pos);
     };
 
-    const recsWithDistance = useMemo(() => {
-        const buildKey = (r, idx) => {
-            if (r?._osmType && r?._osmId != null) return `${r._osmType}:${r._osmId}`;
-            return `${r.latitude}-${r.longitude}-${idx}`;
-        };
+    const generateAiRoute = async () => {
+        if (!pos) return;
 
+        try {
+            setAiRouteError("");
+            setAiRouteLoading(true);
+
+            const res = await api.post("/ai-routes/me", {
+                latitude: pos.lat,
+                longitude: pos.lng,
+                desiredDurationMinutes: 180,
+                maxBudget: profile?.budgetMax ?? 30,
+                routeStyle: profile?.travelStyle ?? "cultural",
+            });
+
+            setAiRoute(res.data ?? null);
+        } catch (e) {
+            console.error(e);
+            setAiRoute(null);
+            setAiRouteError("Failed to generate AI route.");
+        } finally {
+            setAiRouteLoading(false);
+        }
+    };
+
+    const recsWithDistance = useMemo(() => {
         if (!pos) {
-            return recs.map((r, idx) => ({ ...r, _key: buildKey(r, idx), _dist: null }));
+            return recs.map((r, idx) => ({ ...r, _key: buildRecKey(r, idx), _dist: null }));
         }
 
         return recs.map((r, idx) => {
             const d = distanceM(pos.lat, pos.lng, r.latitude, r.longitude);
-            return { ...r, _key: buildKey(r, idx), _dist: d };
+            return { ...r, _key: buildRecKey(r, idx), _dist: d };
         });
     }, [recs, pos]);
 
@@ -319,23 +360,48 @@ export default function MapPage() {
         });
     }, [recsWithDistance, search, categoryFilter]);
 
+    const selectedRec = useMemo(
+        () =>
+            filteredRecs.find((r) => r._key === selectedKey) ||
+            recsWithDistance.find((r) => r._key === selectedKey) ||
+            null,
+        [filteredRecs, recsWithDistance, selectedKey]
+    );
+
     const focusOnRec = (r) => {
         if (!r || !mapRef.current) return;
 
         const key = r._key;
         setSelectedKey(key);
 
-        const target = [r.latitude, r.longitude];
-        const zoom = 16;
-
-        mapRef.current.flyTo(target, zoom, { animate: true, duration: 0.7 });
+        mapRef.current.flyTo([r.latitude, r.longitude], 16, {
+            animate: true,
+            duration: 0.7,
+        });
 
         setTimeout(() => {
-            const m = markerRefs.current[key];
-            if (m && typeof m.openPopup === "function") {
-                m.openPopup();
+            const marker = markerRefs.current[key];
+            if (marker && typeof marker.openPopup === "function") {
+                marker.openPopup();
             }
-        }, 350);
+        }, 320);
+    };
+
+    const focusOnAiPoint = (point, idx) => {
+        if (!point || !mapRef.current) return;
+
+        const key = buildAiPointKey(point, idx);
+        mapRef.current.flyTo([point.latitude, point.longitude], 16, {
+            animate: true,
+            duration: 0.7,
+        });
+
+        setTimeout(() => {
+            const marker = markerRefs.current[key];
+            if (marker && typeof marker.openPopup === "function") {
+                marker.openPopup();
+            }
+        }, 320);
     };
 
     if (loading) {
@@ -344,10 +410,18 @@ export default function MapPage() {
                 <div className="map-topbar">
                     <div>
                         <div className="map-title">Recommended places</div>
-                        <div className="map-subtitle">Loading…</div>
+                        <div className="map-subtitle">
+                            Preparing your live location, preferences, and nearby suggestions...
+                        </div>
                     </div>
                 </div>
-                <div className="map-panel">Loading map…</div>
+
+                <div className="map-panel">
+                    <div className="map-error-title">Loading your city view</div>
+                    <div className="map-error">
+                        The app is connecting your profile, location, and real-time recommendation data.
+                    </div>
+                </div>
             </div>
         );
     }
@@ -356,8 +430,17 @@ export default function MapPage() {
         return (
             <div className="map-shell">
                 <div className="map-topbar">
-                    <div className="map-title">Map</div>
+                    <div>
+                        <div className="map-title">Map access needed</div>
+                        <div className="map-subtitle">
+                            Your location helps the assistant find places that are actually relevant around you.
+                        </div>
+                    </div>
+
                     <div className="map-actions">
+                        <button className="map-btn secondary" onClick={() => navigate("/profile")}>
+                            Profile
+                        </button>
                         <button className="map-btn secondary" onClick={logout}>
                             Logout
                         </button>
@@ -365,12 +448,17 @@ export default function MapPage() {
                 </div>
 
                 <div className="map-panel">
-                    <div className="map-error-title">Something went wrong</div>
+                    <div className="map-error-title">We could not access your location</div>
                     <div className="map-error">{geoError}</div>
 
-                    <button className="map-btn" onClick={retryGeolocation} style={{ marginTop: 14 }}>
-                        Try again
-                    </button>
+                    <div className="map-inline-actions">
+                        <button className="map-btn" onClick={retryGeolocation}>
+                            Try again
+                        </button>
+                        <button className="map-btn secondary" onClick={() => navigate("/profile")}>
+                            Open profile
+                        </button>
+                    </div>
                 </div>
             </div>
         );
@@ -383,26 +471,36 @@ export default function MapPage() {
                     <div className="map-title">Recommended places</div>
                     <div className="map-subtitle">
                         Radius: <b>{radiusM} m</b>
-                        {weatherKind && (
-                            <div style={{ marginTop: 8, fontSize: 14 }}>
-                                Weather mode: <b>{weatherKind}</b>
-                                {weatherMessage ? ` — ${weatherMessage}` : ""}
-                            </div>
-                        )}
                         {profile?.city ? (
                             <>
                                 {" "}
                                 • City: <b>{profile.city}</b>
                             </>
                         ) : null}
+                        {pos ? (
+                            <>
+                                {" "}
+                                • Near: <b>{pos.lat.toFixed(3)}, {pos.lng.toFixed(3)}</b>
+                            </>
+                        ) : null}
                         {" • "}Found: <b>{recs.length}</b>
                     </div>
 
+                    {weatherKind && (
+                        <div className="map-weather">
+                            <span>{formatWeatherLabel(weatherKind)}</span>
+                            {weatherMessage ? <span>— {weatherMessage}</span> : null}
+                        </div>
+                    )}
                 </div>
 
                 <div className="map-actions">
                     <button className="map-btn" onClick={refresh} disabled={recsLoading}>
                         {recsLoading ? "Refreshing..." : "Refresh"}
+                    </button>
+
+                    <button className="map-btn" onClick={generateAiRoute} disabled={aiRouteLoading}>
+                        {aiRouteLoading ? "Generating AI route..." : "Generate AI route"}
                     </button>
 
                     <button className="map-btn secondary" onClick={() => navigate("/profile")}>
@@ -424,6 +522,15 @@ export default function MapPage() {
                 </div>
             )}
 
+            {aiRouteError && (
+                <div className="map-banner">
+                    <div className="map-banner-text">{aiRouteError}</div>
+                    <button className="map-btn" onClick={generateAiRoute} disabled={aiRouteLoading}>
+                        Retry AI route
+                    </button>
+                </div>
+            )}
+
             <div className="map-layout">
                 <div className="map-wrap">
                     <MapContainer
@@ -431,7 +538,9 @@ export default function MapPage() {
                         zoom={14}
                         className="map-canvas"
                         scrollWheelZoom
-                        whenCreated={(map) => (mapRef.current = map)}
+                        whenCreated={(map) => {
+                            mapRef.current = map;
+                        }}
                     >
                         <TileLayer
                             attribution="&copy; OpenStreetMap contributors"
@@ -440,106 +549,149 @@ export default function MapPage() {
 
                         <Marker position={pos}>
                             <Popup>
-                                <b>You are here</b>
-                                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>
-                                    Lat: {pos.lat.toFixed(5)}, Lng: {pos.lng.toFixed(5)}
+                                <div className="popup-card popup-card--user">
+                                    <div className="popup-title">You are here</div>
+                                    <div className="popup-text">
+                                        Current position used for nearby recommendations and distance calculations.
+                                    </div>
+                                    <div className="popup-meta">
+                                        Lat: {pos.lat.toFixed(5)} • Lng: {pos.lng.toFixed(5)}
+                                    </div>
                                 </div>
                             </Popup>
                         </Marker>
 
-                        <Circle center={pos} radius={radiusM} pathOptions={{ weight: 2 }} />
+                        <Circle center={pos} radius={radiusM} pathOptions={{ weight: 2, opacity: 0.8 }} />
 
                         {recsWithDistance.map((r) => (
                             <Marker
                                 key={r._key}
                                 position={[r.latitude, r.longitude]}
                                 ref={(ref) => {
-                                    // react-leaflet v4 ref -> Leaflet marker instance
                                     if (ref) markerRefs.current[r._key] = ref;
                                 }}
                             >
                                 <Popup>
-                                    <div style={{ minWidth: 240 }}>
-                                        <div style={{ fontWeight: 800, fontSize: 14 }}>{r.name}</div>
+                                    <div className="popup-card">
+                                        <div className="popup-title">{r.name}</div>
 
-                                        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.9 }}>
-                                            Category: <b>{r.category}</b>
+                                        <div className="popup-line">
+                                            Category: <b>{formatCategory(r.category)}</b>
                                         </div>
 
                                         {typeof r.score === "number" && (
-                                            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.9 }}>
-                                                Score: <b>{r.score.toFixed(2)}</b>
+                                            <div className="popup-line">
+                                                Match score: <b>{r.score.toFixed(2)}</b>
                                             </div>
                                         )}
 
                                         {typeof r._dist === "number" && (
-                                            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.9 }}>
+                                            <div className="popup-line">
                                                 Distance: <b>{formatDistance(r._dist)}</b>
                                             </div>
                                         )}
 
-                                        {/* ✅ extra info from DTO */}
                                         {r.address && (
-                                            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.9 }}>
+                                            <div className="popup-line">
                                                 Address: <b>{r.address}</b>
                                             </div>
                                         )}
 
                                         {r.openingHours && (
-                                            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.9 }}>
+                                            <div className="popup-line">
                                                 Hours: <b>{r.openingHours}</b>
                                             </div>
                                         )}
 
                                         {r.phone && (
-                                            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.9 }}>
+                                            <div className="popup-line">
                                                 Phone: <b>{r.phone}</b>
                                             </div>
                                         )}
 
                                         {r.wheelchair != null && (
-                                            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.9 }}>
-                                                Wheelchair: <b>{r.wheelchair ? "yes" : "no"}</b>
+                                            <div className="popup-line">
+                                                Wheelchair access: <b>{r.wheelchair ? "yes" : "no"}</b>
                                             </div>
                                         )}
 
                                         {typeof r.estimatedCostEur === "number" && (
-                                            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.9 }}>
+                                            <div className="popup-line">
                                                 Avg cost: <b>~{r.estimatedCostEur.toFixed(0)} €</b>
-                                                {r.costLevel ? ` • ${r.costLevel.toLowerCase()}` : ""}
+                                                {r.costLevel ? ` • ${String(r.costLevel).toLowerCase()}` : ""}
                                             </div>
                                         )}
 
-
                                         {safeUrl(r.website) && (
-                                            <div style={{ marginTop: 6, fontSize: 12, opacity: 0.95 }}>
+                                            <div className="popup-link-row">
                                                 <a
                                                     href={safeUrl(r.website)}
                                                     target="_blank"
                                                     rel="noreferrer"
-                                                    style={{ textDecoration: "underline" }}
+                                                    className="popup-link"
                                                 >
-                                                    Website
+                                                    Open website
                                                 </a>
                                             </div>
                                         )}
 
-                                        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+                                        <div className="popup-meta">
                                             Source: {r.source}
-                                            {r._osmType && r._osmId != null ? ` • OSM: ${r._osmType}/${r._osmId}` : ""}
+                                            {r._osmType && r._osmId != null ? ` • OSM ${r._osmType}/${r._osmId}` : ""}
                                         </div>
                                     </div>
                                 </Popup>
                             </Marker>
                         ))}
+
+                        {aiRoute?.points?.map((point, idx) => {
+                            const key = buildAiPointKey(point, idx);
+
+                            return (
+                                <Marker
+                                    key={key}
+                                    position={[point.latitude, point.longitude]}
+                                    ref={(ref) => {
+                                        if (ref) markerRefs.current[key] = ref;
+                                    }}
+                                >
+                                    <Popup>
+                                        <div className="popup-card">
+                                            <div className="popup-title">
+                                                {point.stopOrder ? `${point.stopOrder}. ` : ""}
+                                                {point.placeName}
+                                            </div>
+
+                                            <div className="popup-line">
+                                                Category: <b>{formatCategory(point.category)}</b>
+                                            </div>
+
+                                            {point.suggestedStayMinutes != null && (
+                                                <div className="popup-line">
+                                                    Suggested stay: <b>{point.suggestedStayMinutes} min</b>
+                                                </div>
+                                            )}
+
+                                            {point.reason && (
+                                                <div className="popup-text">{point.reason}</div>
+                                            )}
+
+                                            <div className="popup-meta">AI route point</div>
+                                        </div>
+                                    </Popup>
+                                </Marker>
+                            );
+                        })}
                     </MapContainer>
                 </div>
 
                 <aside className="map-sidebar">
                     <div className="sidebar-head">
-                        <div className="sidebar-title">Results</div>
-                        <div className="sidebar-meta">
-                            {filteredRecs.length} of {recs.length}
+                        <div>
+                            <div className="sidebar-title">Places near you</div>
+                            <div className="sidebar-meta">
+                                {filteredRecs.length} visible of {recs.length} total
+                            </div>
                         </div>
                     </div>
 
@@ -549,7 +701,7 @@ export default function MapPage() {
                             <input
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
-                                placeholder="museum, cafe, park…"
+                                placeholder="museum, cafe, gallery..."
                             />
                         </div>
 
@@ -558,7 +710,7 @@ export default function MapPage() {
                             <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
                                 {categories.map((c) => (
                                     <option key={c} value={c}>
-                                        {c === "ALL" ? "All" : c.toLowerCase()}
+                                        {c === "ALL" ? "All categories" : formatCategory(c)}
                                     </option>
                                 ))}
                             </select>
@@ -566,8 +718,79 @@ export default function MapPage() {
                     </div>
 
                     <div className="sidebar-list">
+                        {aiRoute && (
+                            <div className="selected-card">
+                                <div className="selected-label">AI route</div>
+                                <div className="selected-name">{aiRoute.title}</div>
+
+                                {aiRoute.summary && (
+                                    <div className="selected-meta">{aiRoute.summary}</div>
+                                )}
+
+                                <div className="selected-meta">
+                                    {aiRoute.weatherContext ? `Weather: ${aiRoute.weatherContext}` : ""}
+                                    {aiRoute.estimatedDurationMinutes != null
+                                        ? ` • Duration: ${aiRoute.estimatedDurationMinutes} min`
+                                        : ""}
+                                    {aiRoute.estimatedBudget != null
+                                        ? ` • Budget: ~${aiRoute.estimatedBudget} €`
+                                        : ""}
+                                </div>
+
+                                {Array.isArray(aiRoute.points) && aiRoute.points.length > 0 && (
+                                    <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+                                        {aiRoute.points.map((point, idx) => (
+                                            <button
+                                                key={buildAiPointKey(point, idx)}
+                                                className="rec-card"
+                                                onClick={() => focusOnAiPoint(point, idx)}
+                                            >
+                                                <div className="rec-top">
+                                                    <div className="rec-name">
+                                                        {point.stopOrder ? `${point.stopOrder}. ` : ""}
+                                                        {point.placeName}
+                                                    </div>
+                                                    <div className="rec-pill">
+                                                        {formatCategory(point.category)}
+                                                    </div>
+                                                </div>
+
+                                                <div className="rec-bottom">
+                                                    {point.suggestedStayMinutes != null && (
+                                                        <div className="rec-sub">
+                                                            Suggested stay: {point.suggestedStayMinutes} min
+                                                        </div>
+                                                    )}
+                                                    {point.reason && (
+                                                        <div className="rec-sub rec-sub--address">
+                                                            {point.reason}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {selectedRec && (
+                            <div className="selected-card">
+                                <div className="selected-label">Selected</div>
+                                <div className="selected-name">{selectedRec.name}</div>
+                                <div className="selected-meta">
+                                    {formatCategory(selectedRec.category)}
+                                    {typeof selectedRec._dist === "number" ? ` • ${formatDistance(selectedRec._dist)}` : ""}
+                                    {selectedRec.address ? ` • ${selectedRec.address}` : ""}
+                                </div>
+                            </div>
+                        )}
+
                         {filteredRecs.length === 0 ? (
-                            <div className="sidebar-empty">No matches. Try another search or change category.</div>
+                            <div className="sidebar-empty">
+                                No matches were found for the current search and category filters.
+                                Try a broader search, another category, or refresh the recommendations.
+                            </div>
                         ) : (
                             filteredRecs.map((r) => (
                                 <button
@@ -577,18 +800,24 @@ export default function MapPage() {
                                 >
                                     <div className="rec-top">
                                         <div className="rec-name">{r.name}</div>
-                                        <div className="rec-pill">{(r.category || "place").toLowerCase()}</div>
+                                        <div className="rec-pill">{formatCategory(r.category)}</div>
                                     </div>
 
                                     <div className="rec-bottom">
                                         <div className="rec-sub">
-                                            {typeof r._dist === "number" ? formatDistance(r._dist) : "—"}
+                                            {typeof r._dist === "number" ? formatDistance(r._dist) : "Distance unavailable"}
                                             {typeof r.score === "number" ? ` • score ${r.score.toFixed(1)}` : ""}
                                             {typeof r.estimatedCostEur === "number"
-                                                ? ` • ~${r.estimatedCostEur.toFixed(0)}€${r.costLevel ? ` (${r.costLevel.toLowerCase()})` : ""}`
+                                                ? ` • ~${r.estimatedCostEur.toFixed(0)}€${r.costLevel ? ` (${String(r.costLevel).toLowerCase()})` : ""}`
                                                 : ""}
-                                            {r.address ? ` • ${r.address}` : ""}
                                         </div>
+
+                                        {r.address && (
+                                            <div className="rec-sub rec-sub--address">
+                                                {r.address}
+                                            </div>
+                                        )}
+
                                         <div className="rec-src">{r.source}</div>
                                     </div>
                                 </button>
