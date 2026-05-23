@@ -15,7 +15,7 @@ public class AiRouteService {
 
     private final RecommendationService recommendationService;
     private final WeatherService weatherService;
-    private final OllamaRoutePlannerService ollamaRoutePlannerService;
+    private final GeminiRoutePlannerService geminiRoutePlannerService;
 
     public AiRouteResponseDto generateRouteForUser(UUID userId, AiRouteRequestDto request) {
         if (request.getLatitude() == null || request.getLongitude() == null) {
@@ -79,6 +79,6 @@ public class AiRouteService {
                 }
                 """);
 
-        return ollamaRoutePlannerService.planRoute(prompt.toString());
+        return geminiRoutePlannerService.planRoute(prompt.toString());
     }
 }

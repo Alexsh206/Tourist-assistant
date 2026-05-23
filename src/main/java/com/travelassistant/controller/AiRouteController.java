@@ -21,9 +21,6 @@ public class AiRouteController {
             Authentication authentication,
             @RequestBody AiRouteRequestDto request
     ) {
-        System.out.println("AI ROUTE CONTROLLER HIT");
-        System.out.println("AUTH = " + authentication);
-
         UUID userId = UUID.fromString(authentication.getName());
         return aiRouteService.generateRouteForUser(userId, request);
     }
