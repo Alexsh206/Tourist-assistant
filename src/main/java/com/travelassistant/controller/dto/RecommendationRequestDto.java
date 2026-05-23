@@ -6,4 +6,6 @@ import lombok.Data;
 public class RecommendationRequestDto {
     private Double latitude;
     private Double longitude;
+    private Boolean useWeatherContext;
+    private Boolean useTimeContext;
 }

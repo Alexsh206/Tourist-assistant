@@ -22,6 +22,15 @@ public class RecommendationController {
             @RequestBody RecommendationRequestDto req
     ) {
         UUID userId = UUID.fromString(authentication.getName());
-        return (RecommendationResponseDto) recommendationService.getRecommendationsForUser(userId, req.getLatitude(), req.getLongitude());
+        boolean useWeatherContext = !Boolean.FALSE.equals(req.getUseWeatherContext());
+        boolean useTimeContext = !Boolean.FALSE.equals(req.getUseTimeContext());
+
+        return recommendationService.getRecommendationsForUser(
+                userId,
+                req.getLatitude(),
+                req.getLongitude(),
+                useWeatherContext,
+                useTimeContext
+        );
     }
 }

@@ -14,5 +14,7 @@ import java.util.List;
 public class RecommendationResponseDto {
     private String weatherKind;
     private String weatherMessage;
+    private String timeOfDay;
+    private String timeMessage;
     private List<RecommendationDto> recommendations;
 }

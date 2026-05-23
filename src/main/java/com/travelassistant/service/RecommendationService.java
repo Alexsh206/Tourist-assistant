@@ -6,6 +6,7 @@ import com.travelassistant.controller.dto.RecommendationResponseDto;
 import com.travelassistant.model.UserInterest;
 import com.travelassistant.model.UserProfile;
 import com.travelassistant.model.WeatherKind;
+import com.travelassistant.model.TimeOfDayKind;
 import com.travelassistant.repository.UserInterestRepository;
 import com.travelassistant.repository.UserProfileRepository;
 import lombok.RequiredArgsConstructor;
@@ -28,6 +29,7 @@ public class RecommendationService {
     private final UserProfileRepository userProfileRepository;
     private final UserInterestRepository userInterestRepository;
     private final WeatherService weatherService;
+    private final TimeContextService timeContextService;
     private final ObjectMapper objectMapper;
 
     private enum CostLevel { LOW, MID, HIGH }
@@ -41,6 +43,16 @@ public class RecommendationService {
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
     public RecommendationResponseDto getRecommendationsForUser(UUID userId, Double lat, Double lng) {
+        return getRecommendationsForUser(userId, lat, lng, true, true);
+    }
+
+    public RecommendationResponseDto getRecommendationsForUser(
+            UUID userId,
+            Double lat,
+            Double lng,
+            boolean useWeatherContext,
+            boolean useTimeContext
+    ) {
         if (lat == null || lng == null) {
             throw new RuntimeException("Latitude/longitude required");
         }
@@ -63,24 +75,33 @@ public class RecommendationService {
                     .build();
         }
 
-        WeatherKind weatherKind = weatherService.getCurrentWeatherKind(lat, lng);
+        WeatherKind weatherKind = useWeatherContext ? weatherService.getCurrentWeatherKind(lat, lng) : null;
+        TimeOfDayKind timeOfDayKind = useTimeContext ? timeContextService.getCurrentTimeOfDay() : null;
 
-        List<TagRule> weatherFilteredRules = rules.stream()
-                .filter(rule -> isRuleAllowedForWeather(rule, weatherKind))
+        List<TagRule> contextFilteredRules = rules.stream()
+                .filter(rule -> !useWeatherContext || isRuleAllowedForWeather(rule, weatherKind))
+                .filter(rule -> !useTimeContext || isRuleAllowedForTime(rule, timeOfDayKind))
                 .toList();
 
-        if (weatherFilteredRules.isEmpty()) {
-            weatherFilteredRules = rules;
+        if (contextFilteredRules.isEmpty() && useWeatherContext && useTimeContext) {
+            contextFilteredRules = rules.stream()
+                    .filter(rule -> isRuleAllowedForWeather(rule, weatherKind))
+                    .toList();
         }
 
-        String query = buildOverpassQuery(lat, lng, radiusM, weatherFilteredRules);
+        if (contextFilteredRules.isEmpty()) {
+            contextFilteredRules = rules;
+        }
+
+        String query = buildOverpassQuery(lat, lng, radiusM, contextFilteredRules);
         OverpassResponse resp = callOverpass(query);
 
-        List<TagRule> finalWeatherFilteredRules = weatherFilteredRules;
+        List<TagRule> finalContextFilteredRules = contextFilteredRules;
         List<RecommendationDto> out = resp.elements.stream()
-                .map(el -> toRecommendation(el, finalWeatherFilteredRules))
+                .map(el -> toRecommendation(el, finalContextFilteredRules))
                 .filter(Objects::nonNull)
-                .filter(place -> isPlaceAllowedForWeather(place, weatherKind))
+                .filter(place -> !useWeatherContext || isPlaceAllowedForWeather(place, weatherKind))
+                .filter(place -> !useTimeContext || isPlaceAllowedForTime(place, timeOfDayKind))
                 .collect(Collectors.toList());
 
         Map<String, RecommendationDto> uniq = new LinkedHashMap<>();
@@ -97,8 +118,10 @@ public class RecommendationService {
                 .toList();
 
         return RecommendationResponseDto.builder()
-                .weatherKind(weatherKind.name())
-                .weatherMessage(weatherService.buildWeatherMessage(weatherKind))
+                .weatherKind(useWeatherContext ? weatherKind.name() : null)
+                .weatherMessage(useWeatherContext ? weatherService.buildWeatherMessage(weatherKind) : null)
+                .timeOfDay(useTimeContext ? timeOfDayKind.name() : null)
+                .timeMessage(useTimeContext ? timeContextService.buildTimeMessage(timeOfDayKind) : null)
                 .recommendations(result)
                 .build();
     }
@@ -113,12 +136,19 @@ public class RecommendationService {
 
             if (name.contains("restaurant")) rules.add(new TagRule("amenity", "restaurant", "restaurant", weight));
             if (name.contains("cafe")) rules.add(new TagRule("amenity", "cafe", "cafe", weight));
+            if (name.contains("bar")) rules.add(new TagRule("amenity", "bar", "bar", weight));
+            if (name.contains("fast food") || name.contains("fast_food")) {rules.add(new TagRule("amenity", "fast_food", "fast_food", weight));}
             if (name.contains("museum")) rules.add(new TagRule("tourism", "museum", "museum", weight));
             if (name.contains("art") && name.contains("galler")) rules.add(new TagRule("tourism", "gallery", "gallery", weight));
             if (name.contains("park")) rules.add(new TagRule("leisure", "park", "park", weight));
             if (name.contains("hiking")) rules.add(new TagRule("tourism", "viewpoint", "hiking", weight));
             if (name.contains("histor")) rules.add(new TagRule("historic", "*", "historical", weight));
             if (name.contains("landmark")) rules.add(new TagRule("tourism", "attraction", "landmark", weight));
+            if (category.contains("food")) {
+                rules.add(new TagRule("amenity", "restaurant", "food", Math.max(1, weight - 1)));
+                rules.add(new TagRule("amenity", "cafe", "food", Math.max(1, weight - 1)));
+            }
+
 
             if (rules.isEmpty() || rules.stream().noneMatch(r -> r.weight == weight)) {
                 if (category.contains("culture")) {
@@ -191,6 +221,75 @@ public class RecommendationService {
                             || category.contains("attraction");
 
             case CLEAR, CLOUDY -> true;
+        };
+    }
+
+    private boolean isRuleAllowedForTime(TagRule rule, TimeOfDayKind timeOfDayKind) {
+        String label = rule.label().toLowerCase();
+
+        return switch (timeOfDayKind) {
+            case MORNING ->
+                    label.contains("cafe")
+                            || label.contains("park")
+                            || label.contains("nature")
+                            || label.contains("museum")
+                            || label.contains("gallery")
+                            || label.contains("landmark");
+
+            case DAY ->
+                    label.contains("museum")
+                            || label.contains("gallery")
+                            || label.contains("park")
+                            || label.contains("nature")
+                            || label.contains("historical")
+                            || label.contains("landmark")
+                            || label.contains("restaurant")
+                            || label.contains("cafe")
+                            || label.contains("hiking");
+
+            case EVENING ->
+                    label.contains("restaurant")
+                            || label.contains("cafe")
+                            || label.contains("viewpoint")
+                            || label.contains("landmark")
+                            || label.contains("attraction")
+                            || label.contains("historical");
+
+            case NIGHT ->
+                    label.contains("restaurant")
+                            || label.contains("cafe");
+        };
+    }
+
+    private boolean isPlaceAllowedForTime(RecommendationDto place, TimeOfDayKind timeOfDayKind) {
+        String category = place.getCategory() == null ? "" : place.getCategory().toLowerCase();
+
+        return switch (timeOfDayKind) {
+            case MORNING ->
+                    category.contains("cafe")
+                            || category.contains("park")
+                            || category.contains("museum")
+                            || category.contains("gallery")
+                            || category.contains("attraction")
+                            || category.contains("historical");
+
+            case DAY ->
+                    true;
+
+            case EVENING ->
+                    category.contains("restaurant")
+                            || category.contains("cafe")
+                            || category.contains("viewpoint")
+                            || category.contains("attraction")
+                            || category.contains("historical")
+                            || category.contains("museum")
+                            || category.contains("gallery");
+
+            case NIGHT ->
+                    category.contains("restaurant")
+                            || category.contains("cafe")
+                            || category.contains("bar")
+                            || category.contains("fast_food");
         };
     }
 

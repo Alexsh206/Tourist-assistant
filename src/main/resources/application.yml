@@ -21,7 +21,17 @@ jwt:
 
 ollama:
   base-url: http://localhost:11434
-  model: gemma3
+  model: gemma3:1b
+
+gemini:
+  base-url: https://generativelanguage.googleapis.com/v1beta
+  model: gemini-2.5-flash
+  api-key: ${AIzaSyB9F29RXGmeMj825tmS0opkCG1f4yxbfoU:}
+
+
+logging:
+  level:
+    org.springframework.security: DEBUG
 
 server:
   port: 8080
