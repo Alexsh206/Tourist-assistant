@@ -1,9 +1,14 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import api from "../api/axios";
 import "./LoginPage.css";
+import LanguageSwitcher from "../components/LanguageSwitcher";
+import ThemeSwitcher from "../components/ThemeSwitcher.jsx";
 
 export default function LoginPage() {
+    const { t } = useTranslation();
+
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [submitting, setSubmitting] = useState(false);
@@ -12,7 +17,7 @@ export default function LoginPage() {
 
     const login = async () => {
         if (!email || !password) {
-            alert("Please enter email and password");
+            alert(t("auth.enterEmailPassword"));
             return;
         }
 
@@ -23,7 +28,7 @@ export default function LoginPage() {
             navigate("/", { replace: true });
         } catch (e) {
             console.error(e);
-            alert("Login failed");
+            alert(t("auth.loginFailed"));
         } finally {
             setSubmitting(false);
         }
@@ -31,40 +36,57 @@ export default function LoginPage() {
 
     return (
         <div className="auth-shell">
-            <div className="auth-card">
-                <div className="auth-header">
-                    <div>
-                        <div className="auth-kicker">Smart travel companion</div>
-                        <h1 className="auth-title">Welcome back</h1>
-                        <p className="auth-subtitle">
-                            Sign in to get live weather-aware recommendations, nearby places,
-                            and a personalized city experience built around your travel style.
-                        </p>
-                    </div>
+            <div className="auth-panel">
+                <div className="auth-dots">
+                    <div className="auth-dot" />
+                    <div className="auth-dot" />
+                    <div className="auth-dot" />
+                </div>
+                <div className="auth-panel-brand">
+                    <p className="auth-panel-tagline">
+                        Discover places <em>made for you,</em> on the map.
+                    </p>
+                    <p className="auth-panel-sub">
+                        Personalized travel recommendations based on your interests, style, and pace.
+                    </p>
+                </div>
+            </div>
+            <div className="auth-form-side">
+                <div className="page-language-row">
+                    <LanguageSwitcher />
+                    <ThemeSwitcher />
+                </div>
+
+                <div className="auth-form-header">
+                    <div className="auth-kicker">{t("app.tagline")}</div>
+                    <h1 className="auth-title">{t("auth.loginTitle")}</h1>
+                    <p className="auth-subtitle">
+                        {t("auth.loginSubtitle")}
+                    </p>
                 </div>
 
                 <div className="auth-form">
                     <div className="field">
-                        <label>Email</label>
+                        <label>{t("auth.email")}</label>
                         <input
-                            placeholder="name@example.com"
+                            placeholder={t("auth.emailPlaceholder")}
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
                             autoComplete="email"
                         />
-                        <span className="hint">Used to securely sync your profile and preferences.</span>
+                        <span className="hint">{t("auth.emailHint")}</span>
                     </div>
 
                     <div className="field">
-                        <label>Password</label>
+                        <label>{t("auth.password")}</label>
                         <input
                             type="password"
-                            placeholder="Enter your password"
+                            placeholder={t("auth.passwordPlaceholder")}
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             autoComplete="current-password"
                         />
-                        <span className="hint">Use your existing account credentials to continue.</span>
+                        <span className="hint">{t("auth.passwordHint")}</span>
                     </div>
 
                     <button
@@ -72,12 +94,12 @@ export default function LoginPage() {
                         onClick={login}
                         disabled={submitting}
                     >
-                        {submitting ? "Signing in..." : "Enter the app"}
+                        {submitting ? t("auth.loginLoading") : t("auth.loginButton")}
                     </button>
 
                     <div className="auth-divider">
                         <span />
-                        <p>New here?</p>
+                        <p>{t("auth.newHere")}</p>
                         <span />
                     </div>
 
@@ -86,12 +108,12 @@ export default function LoginPage() {
                         type="button"
                         onClick={() => navigate("/register")}
                     >
-                        Create account
+                        {t("auth.createAccount")}
                     </button>
                 </div>
 
                 <div className="auth-footer">
-                    Designed for smooth city discovery, personalized routes, and context-aware recommendations.
+                    {t("auth.loginFooter")}
                 </div>
             </div>
         </div>
