@@ -6,8 +6,9 @@ import org.springframework.context.annotation.Configuration;
 
 @Data
 @Configuration
-@ConfigurationProperties(prefix = "ollama")
-public class OllamaConfig {
-    private String baseUrl;
+@ConfigurationProperties(prefix = "gemini")
+public class GeminiConfig {
+    private String apiKey;
     private String model;
+    private String baseUrl;
 }
