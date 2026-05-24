@@ -26,7 +26,7 @@ ollama:
 gemini:
   base-url: https://generativelanguage.googleapis.com/v1beta
   model: gemini-2.5-flash
-  api-key: ${AIzaSyB9F29RXGmeMj825tmS0opkCG1f4yxbfoU:}
+  api-key: ${GEMINI_API_KEY:}
 
 
 logging:
